@@ -1,9 +1,0 @@
-streamlit
-pandas
-numpy
-joblib
-scikit-learn
-matplotlib
-plotly
-keras==3.6.0
-tensorflow-cpu==2.13.1

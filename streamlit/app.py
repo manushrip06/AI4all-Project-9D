@@ -1,13 +1,13 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
-import joblib
-import keras
-import matplotlib.pyplot as plt
 import os
+import pickle
 from datetime import datetime, timedelta
 import plotly.express as px
-import plotly.graph_objects as go
+from tflite_utils import load_tflite_model, tflite_predict
+from sklearn.preprocessing import LabelEncoder, StandardScaler
+from sklearn.impute import SimpleImputer
 
 ## Helpers for model inference and data loading
 @st.cache_resource
@@ -15,17 +15,34 @@ def load_artifacts():
     # Directory of this script
     base_dir = os.path.dirname(__file__)
     # Artifact paths
-    model_path = os.path.join(base_dir, 'best_model.keras')
-    le_path = os.path.join(base_dir, 'label_encoder.pkl')
-    scaler_path = os.path.join(base_dir, 'scaler.pkl')
-    imputer_path = os.path.join(base_dir, 'imputer.pkl')
+    model_path = os.path.join(base_dir, 'crime_prediction_model.tflite')
+    
+    # Load TFLite model
+    model = load_tflite_model(model_path)
+    
+    # Load data to create preprocessors
+    data_path = os.path.join(base_dir, 'combined_data.csv')
+    df = pd.read_csv(data_path)
+    
+    # Create Label Encoder for offense categories
+    le = LabelEncoder()
+    le.fit(df['offense_category_name'].astype(str))
+    
+    # Create StandardScaler for environmental features only
+    scaler = StandardScaler()
+    env_features = ['population', 'crime_rate_per_1000_people']
+    scaler.fit(df[env_features])
+    
+    # Create SimpleImputer for missing values (only for environmental features)
+    imputer = SimpleImputer(strategy='median')
+    imputer.fit(df[env_features])
+    
+    # Load the exact one-hot encoded columns used during training
+    
     ohe_path = os.path.join(base_dir, 'ohe_columns.pkl')
-    # Load model and preprocessing artifacts
-    model = keras.models.load_model(model_path)
-    le = joblib.load(le_path)
-    scaler = joblib.load(scaler_path)
-    imputer = joblib.load(imputer_path)
-    ohe_columns = joblib.load(ohe_path)
+    with open(ohe_path, 'rb') as f:
+        ohe_columns = pickle.load(f)
+    
     return model, le, scaler, imputer, ohe_columns
 
 def preprocess_input(raw_input, imputer, scaler, ohe_columns):
@@ -37,45 +54,67 @@ def preprocess_input(raw_input, imputer, scaler, ohe_columns):
     df_temp['dayofweek_sin'] = np.sin(2*np.pi*df_temp['dayofweek']/7)
     df_temp['dayofweek_cos'] = np.cos(2*np.pi*df_temp['dayofweek']/7)
     df_temp = df_temp.drop(['hour','dayofweek'], axis=1)
+    
     # Spatial one-hot
     df_spat = pd.get_dummies(df_raw[['city','location_area']])
     df_spat = df_spat.reindex(columns=ohe_columns, fill_value=0)
-    # Environmental
-    df_env = df_raw[['population','crime_rate_per_1000_people']].values
+    
+    # Environmental features - apply imputer only to these
+    df_env = df_raw[['population','crime_rate_per_1000_people']].copy()
+    df_env_imputed = imputer.transform(df_env)
+    
     # Combine into feature matrix
-    X_full = np.hstack([df_spat.values, df_temp.values, df_env])
-    # Pad to match imputer's expected number of features
-    try:
-        n_expected = imputer.n_features_in_
-    except AttributeError:
-        n_expected = imputer.n_input_features_
-    if X_full.shape[1] < n_expected:
-        pad = np.zeros((X_full.shape[0], n_expected - X_full.shape[1]))
-        X_full = np.hstack([X_full, pad])
-    # Apply imputer
-    X_imp = imputer.transform(X_full)
+    X_full = np.hstack([df_spat.values, df_temp.values, df_env_imputed])
+    
     # Split into three inputs
     s_dim = len(ohe_columns)
     t_dim = df_temp.shape[1]
-    env_dim = df_env.shape[1]
-    X_s = X_imp[:, :s_dim]
-    X_t = X_imp[:, s_dim:s_dim + t_dim]
-    # Extract only the original environmental features before scaling
-    X_e_raw = X_imp[:, s_dim + t_dim : s_dim + t_dim + env_dim]
+    env_dim = df_env_imputed.shape[1]
+    
+    X_s = X_full[:, :s_dim]
+    X_t = X_full[:, s_dim:s_dim + t_dim]
+    X_e_raw = X_full[:, s_dim + t_dim : s_dim + t_dim + env_dim]
     X_e = scaler.transform(X_e_raw)
-    return [X_s, X_t, X_e]
+    return [X_t, X_s, X_e]
 
 def predict_crime(raw_input, model, le, scaler, imputer, ohe_columns, top_k=5):
-    inputs = preprocess_input(raw_input, imputer, scaler, ohe_columns)
-    proba = model.predict(inputs, verbose=0)[0]
-    idx = np.argsort(proba)[::-1][:top_k]
-    return [(le.inverse_transform([i])[0], float(proba[i])) for i in idx]
+    # Use the actual TensorFlow Lite model for predictions - NO FALLBACKS
+    if model is None:
+        st.error("❌ TensorFlow model not loaded. Cannot make predictions.")
+        st.stop()
+    
+    # Preprocess the input
+    X_inputs = preprocess_input(raw_input, imputer, scaler, ohe_columns)
+    
+    # Make prediction using TFLite model
+    predictions = tflite_predict(model, X_inputs)
+    
+    # Get top-k predictions
+    pred_probs = predictions[0]  # Assuming single sample
+    top_indices = np.argsort(pred_probs)[::-1][:top_k]
+    
+    # Convert indices back to crime type names
+    results = []
+    for idx in top_indices:
+        crime_type = le.inverse_transform([idx])[0]
+        probability = float(pred_probs[idx])
+        results.append((crime_type, probability))
+    
+    # Show model is working with REAL data
+    st.sidebar.info(f"🧠 Model processed {len(pred_probs)} crime types")
+    st.sidebar.info(f"📊 Max probability: {max(pred_probs):.3f}")
+    st.sidebar.info(f"🎯 Input city: {raw_input.get('city', 'Unknown')}")
+    st.sidebar.info(f"🕐 Input hour: {raw_input.get('hour', 'Unknown')}")
+    
+    return results
 
 @st.cache_data
 def load_data():
     try:
-        # Load combined data from project root
-        return pd.read_csv('combined_data.csv')
+        # Load combined data from the streamlit directory
+        base_dir = os.path.dirname(__file__)
+        data_path = os.path.join(base_dir, 'combined_data.csv')
+        return pd.read_csv(data_path)
     except Exception as e:
         st.error(f"Error loading data: {e}")
         return None
@@ -107,8 +146,14 @@ view = st.sidebar.radio("Select View", ["🔮 Predict Crime", "📊 Historical A
 with st.spinner("Loading models and data..."):
     data = load_data()
     model, le, scaler, imputer, ohe_columns = load_artifacts()
+    
+    # Show model loading success
+    if model is not None:
+        st.sidebar.success("🤖 TensorFlow Lite Model Loaded!")
+    else:
+        st.sidebar.error("❌ Model failed to load!")
 
-if data is None or model is None or le is None:
+if data is None or model is None:
     st.error("❌ Failed to load required data or models. Please check file paths.")
     st.stop()
 
@@ -205,39 +250,48 @@ if view == "🔮 Predict Crime":
             st.session_state['preds'][city] = predict_crime(raw, model, le, scaler, imputer, ohe_columns, top_k=10)
     # Display cached predictions with adjustable top_k
     if 'preds' in st.session_state:
-        tabs = st.tabs(selected_cities)
-        for city, tab in zip(selected_cities, tabs):
-            with tab:
+        if selected_cities:
+            tabs = st.tabs(selected_cities)
+            for city, tab in zip(selected_cities, tabs):
                 city_preds = st.session_state['preds'].get(city, [])
-                max_k = len(city_preds)
-                n_top = st.slider(
-                    "Number of top crime types to display",
-                    min_value=1,
-                    max_value=max_k,
-                    value=min(5, max_k),
-                    key=f"n_top_{city}"
-                )
-                preds = city_preds[:n_top]
-                results_df = pd.DataFrame(preds, columns=['Crime Type', 'Probability'])
-                st.markdown("---")
-                st.header(f"🎯 Predictions for {city}")
-                for idx, (crime, prob) in enumerate(preds, start=1):
-                    st.write(f"**{idx}.** {crime}: {prob:.2%}")
-                fig = px.bar(
-                    results_df, x='Probability', y='Crime Type', orientation='h',
-                    color='Probability', color_continuous_scale='viridis', text='Probability'
-                )
-                fig.update_traces(texttemplate='%{text:.1%}', textposition='outside')
-                fig.update_layout(
-                    xaxis_title='Probability',
-                    yaxis={'categoryorder':'total ascending'}, height=400, showlegend=False
-                )
-                st.plotly_chart(fig, use_container_width=True)
-                with st.expander("Show full predictions"):
-                    st.dataframe(
-                        results_df.assign(Probability=lambda df: df['Probability'].map(lambda x: f"{x:.2%}")),
-                        use_container_width=True
-                    )
+                with tab:
+                    max_k = len(city_preds)
+                    if max_k > 0:
+                        n_top = st.slider(
+                            "Number of top crime types to display",
+                            min_value=1,
+                            max_value=max_k,
+                            value=min(5, max_k),
+                            key=f"n_top_{city}"
+                        )
+                        preds = city_preds[:n_top]
+                        results_df = pd.DataFrame(preds, columns=['Crime Type', 'Probability'])
+                        st.markdown("---")
+                        st.header(f"🎯 Predictions for {city}")
+                        for idx, (crime, prob) in enumerate(preds, start=1):
+                            st.write(f"**{idx}.** {crime}: {prob:.2%}")
+                        fig = px.bar(
+                            results_df, x='Probability', y='Crime Type', orientation='h',
+                            color='Probability', color_continuous_scale='viridis', text='Probability'
+                        )
+                        fig.update_traces(texttemplate='%{text:.1%}', textposition='outside')
+                        fig.update_layout(
+                            xaxis_title='Probability',
+                            xaxis=dict(tickformat='.1%'),
+                            yaxis={'categoryorder':'total ascending'}, 
+                            height=400, 
+                            showlegend=False
+                        )
+                        st.plotly_chart(fig, use_container_width=True)
+                        with st.expander("Show full predictions"):
+                            st.dataframe(
+                                results_df.assign(Probability=lambda df: df['Probability'].map(lambda x: f"{x:.2%}")),
+                                use_container_width=True
+                            )
+                    else:
+                        st.info("No predictions available for this city. Please check your input or try another city.")
+        else:
+            st.info("Please select at least one city to view predictions.")
 
 elif view == "📊 Historical Analysis":
     st.header("Historical Crime Analysis")
@@ -251,7 +305,7 @@ elif view == "📊 Historical Analysis":
         filtered_data = data[data['city'].isin(selected_cities)]
         
         # Time period selection
-        years = sorted(filtered_data['year'].unique())
+        years = sorted([int(year) for year in filtered_data['year'].unique()])  # Convert numpy.int64 to int
         if len(years) > 1:
             year_range = st.slider("Select Year Range", min_value=min(years), max_value=max(years), value=(min(years), max(years)))
             filtered_data = filtered_data[(filtered_data['year'] >= year_range[0]) & (filtered_data['year'] <= year_range[1])]
@@ -327,4 +381,4 @@ elif view == "ℹ️ About":
     with col2:
         st.metric("Cities Covered", "95")
     with col3:
-        st.metric("Crime Types", "20")
+        st.metric("Crime Types", "20+")
