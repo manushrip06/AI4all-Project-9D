@@ -96,7 +96,7 @@ st.set_page_config(
     layout="wide"
 )
 
-st.title("🚨 Connecticut Crime Prediction App")
+st.title("Connecticut Crime Prediction App")
 st.markdown("---")
 
 # Sidebar for navigation
@@ -127,7 +127,7 @@ if view == "🔮 Predict Crime":
         selected_cities = st.multiselect(
             "Select Cities",
             options=cities,
-            default=cities[:2] if len(cities) >= 2 else cities,
+            default=cities[:1] if len(cities) >= 1 else cities,
             help="Choose one or more Connecticut cities for comparison"
         )
         area = st.selectbox("Location Area", areas, help="Select the type of location")
@@ -162,8 +162,9 @@ if view == "🔮 Predict Crime":
     with col2:
         st.subheader("🏙️ Environmental Factors")
         
-        # Get default values from data
-        city_data = data[data['city'] == cities[0]]
+        # Get default values from the first selected city (fallback to first in list)
+        fallback_city = selected_cities[0] if selected_cities else cities[0]
+        city_data = data[data['city'] == fallback_city]
         default_pop = int(city_data['population'].iloc[0]) if not city_data.empty else 50000
         default_crime_rate = float(city_data['crime_rate_per_1000_people'].iloc[0]) if not city_data.empty else 100.0
         
@@ -183,63 +184,60 @@ if view == "🔮 Predict Crime":
             help="Historical crime rate per 1000 residents"
         )
 
-    if st.button("🔮 Predict Crime", type="primary", use_container_width=True):
-        with st.spinner("Analyzing crime patterns..."):
-            # Create datetime using the selected hour
-            dt = datetime.combine(date, datetime.min.time().replace(hour=hour))
-            # Prepare tabs for each selected city and display top-k via helper
-            tabs = st.tabs(selected_cities)
-            for city, tab in zip(selected_cities, tabs):
-                with tab:
-                    try:
-                        # Build raw input dict
-                        # Build raw input dict including full date components
-                        raw = {
-                            'city': city,
-                            'location_area': area,
-                            'year': dt.year,
-                            'month': dt.month,
-                            'day': dt.day,
-                            'hour': dt.hour,
-                            'dayofweek': dt.weekday(),
-                            'population': population,
-                            'crime_rate_per_1000_people': crime_rate
-                        }
-                        # Use helper to get top-k predictions
-                        n_top = st.slider(
-                            "Number of top crime types to display",
-                            min_value=1,
-                            max_value=10,
-                            value=5,
-                            key=f"n_top_{city}"
-                        )
-                        preds = predict_crime(raw, model, le, scaler, imputer, ohe_columns, top_k=n_top)
-                        results_df = pd.DataFrame(preds, columns=['Crime Type', 'Probability'])
-                        # Display header and list
-                        st.markdown("---")
-                        st.header(f"🎯 Predictions for {city}")
-                        st.subheader(f"Top {n_top} Most Likely Crimes")
-                        for idx, (crime, prob) in enumerate(preds, start=1):
-                            st.write(f"**{idx}.** {crime}: {prob:.2%}")
-                        # Plot bar chart
-                        fig = px.bar(
-                            results_df, x='Probability', y='Crime Type', orientation='h',
-                            color='Probability', color_continuous_scale='viridis', text='Probability'
-                        )
-                        fig.update_traces(texttemplate='%{text:.1%}', textposition='outside')
-                        fig.update_layout(
-                            xaxis_title='Probability',
-                            yaxis={'categoryorder':'total ascending'}, height=400, showlegend=False
-                        )
-                        st.plotly_chart(fig, use_container_width=True)
-                        # Full table
-                        with st.expander("Show full predictions"):
-                            st.dataframe(
-                                results_df.assign(Probability=lambda df: df['Probability'].map(lambda x: f"{x:.2%}")),
-                                use_container_width=True
-                            )
-                    except Exception as e:
-                        st.error(f"Prediction error for {city}: {e}")
+    # Trigger prediction and store in session state
+    predict_clicked = st.button("🔮 Predict Crime", type="primary", use_container_width=True)
+    if predict_clicked:
+        # Generate predictions for each city and cache
+        dt = datetime.combine(date, datetime.min.time().replace(hour=hour))
+        st.session_state['preds'] = {}
+        for city in selected_cities:
+            raw = {
+                'city': city,
+                'location_area': area,
+                'year': dt.year,
+                'month': dt.month,
+                'day': dt.day,
+                'hour': dt.hour,
+                'dayofweek': dt.weekday(),
+                'population': population,
+                'crime_rate_per_1000_people': crime_rate
+            }
+            st.session_state['preds'][city] = predict_crime(raw, model, le, scaler, imputer, ohe_columns, top_k=10)
+    # Display cached predictions with adjustable top_k
+    if 'preds' in st.session_state:
+        tabs = st.tabs(selected_cities)
+        for city, tab in zip(selected_cities, tabs):
+            with tab:
+                city_preds = st.session_state['preds'].get(city, [])
+                max_k = len(city_preds)
+                n_top = st.slider(
+                    "Number of top crime types to display",
+                    min_value=1,
+                    max_value=max_k,
+                    value=min(5, max_k),
+                    key=f"n_top_{city}"
+                )
+                preds = city_preds[:n_top]
+                results_df = pd.DataFrame(preds, columns=['Crime Type', 'Probability'])
+                st.markdown("---")
+                st.header(f"🎯 Predictions for {city}")
+                for idx, (crime, prob) in enumerate(preds, start=1):
+                    st.write(f"**{idx}.** {crime}: {prob:.2%}")
+                fig = px.bar(
+                    results_df, x='Probability', y='Crime Type', orientation='h',
+                    color='Probability', color_continuous_scale='viridis', text='Probability'
+                )
+                fig.update_traces(texttemplate='%{text:.1%}', textposition='outside')
+                fig.update_layout(
+                    xaxis_title='Probability',
+                    yaxis={'categoryorder':'total ascending'}, height=400, showlegend=False
+                )
+                st.plotly_chart(fig, use_container_width=True)
+                with st.expander("Show full predictions"):
+                    st.dataframe(
+                        results_df.assign(Probability=lambda df: df['Probability'].map(lambda x: f"{x:.2%}")),
+                        use_container_width=True
+                    )
 
 elif view == "📊 Historical Analysis":
     st.header("Historical Crime Analysis")
@@ -300,12 +298,12 @@ elif view == "ℹ️ About":
     - **Environmental features**: Population and crime rate
     
     ### 🧠 Model Information
-    - **Neural Network**: CNN model trained on Connecticut crime data (2021-2023)
+    - **Dense Neural Network**: DNN model trained on Connecticut crime data (2021-2023)
     - **Features**: 7 core features covering spatial, temporal, and environmental factors
-    - **Output**: Probability distribution across 52+ crime types
+    - **Output**: Probability distribution across 20 crime types
     
     ### 📊 Data Sources
-    - Connecticut crime incidents from NIBRS (National Incident-Based Reporting System)
+    - Connecticut crime incidents from FBI Crime Database for the state of Connecticut
     - Years covered: 2021, 2022, 2023
     - Cities covered: 95 Connecticut municipalities
     
@@ -329,4 +327,4 @@ elif view == "ℹ️ About":
     with col2:
         st.metric("Cities Covered", "95")
     with col3:
-        st.metric("Crime Types", "52")
+        st.metric("Crime Types", "20")
