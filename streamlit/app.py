@@ -2,7 +2,7 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import joblib
-from tensorflow.keras.models import load_model
+import keras
 import matplotlib.pyplot as plt
 import os
 from datetime import datetime, timedelta
@@ -21,7 +21,7 @@ def load_artifacts():
     imputer_path = os.path.join(base_dir, 'imputer.pkl')
     ohe_path = os.path.join(base_dir, 'ohe_columns.pkl')
     # Load model and preprocessing artifacts
-    model = load_model(model_path)
+    model = keras.models.load_model(model_path)
     le = joblib.load(le_path)
     scaler = joblib.load(scaler_path)
     imputer = joblib.load(imputer_path)
