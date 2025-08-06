@@ -3,5 +3,6 @@ pandas
 numpy
 joblib
 scikit-learn
+matplotlib
 plotly
 tf-nightly
