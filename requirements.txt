@@ -5,4 +5,4 @@ joblib
 scikit-learn
 matplotlib
 plotly
-tf-nightly
+tensorflow-cpu
