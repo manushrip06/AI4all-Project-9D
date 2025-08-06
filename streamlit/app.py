@@ -4,26 +4,24 @@ import numpy as np
 import joblib
 from tensorflow.keras.models import load_model
 import matplotlib.pyplot as plt
+import os
 from datetime import datetime, timedelta
 import plotly.express as px
 import plotly.graph_objects as go
 
 ## Helpers for model inference and data loading
 @st.cache_resource
-def load_artifacts(
-    model_path='streamlit/best_model.keras',
-    le_path='streamlit/label_encoder.pkl',
-    scaler_path='streamlit/scaler.pkl',
-    imputer_path='streamlit/imputer.pkl',
-    ohe_path='streamlit/ohe_columns.pkl'
-):
+def load_artifacts():
+    # Directory of this script
+    base_dir = os.path.dirname(__file__)
+    # Artifact paths
+    model_path = os.path.join(base_dir, 'best_model.keras')
+    le_path = os.path.join(base_dir, 'label_encoder.pkl')
+    scaler_path = os.path.join(base_dir, 'scaler.pkl')
+    imputer_path = os.path.join(base_dir, 'imputer.pkl')
+    ohe_path = os.path.join(base_dir, 'ohe_columns.pkl')
     # Load model and preprocessing artifacts
     model = load_model(model_path)
-    le = joblib.load(le_path)
-    scaler = joblib.load(scaler_path)
-    imputer = joblib.load(imputer_path)
-    ohe_columns = joblib.load(ohe_path)
-    return model, le, scaler, imputer, ohe_columns
     le = joblib.load(le_path)
     scaler = joblib.load(scaler_path)
     imputer = joblib.load(imputer_path)
@@ -77,7 +75,7 @@ def predict_crime(raw_input, model, le, scaler, imputer, ohe_columns, top_k=5):
 def load_data():
     try:
         # Load combined data from project root
-        return pd.read_csv('Datasets/CT-Combined/combined_data.csv')
+        return pd.read_csv('combined_data.csv')
     except Exception as e:
         st.error(f"Error loading data: {e}")
         return None
