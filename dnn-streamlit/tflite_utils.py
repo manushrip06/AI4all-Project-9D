@@ -7,10 +7,10 @@ def load_tflite_model(model_path):
     return interpreter
 
 def tflite_predict(interpreter, inputs):
-    # Assumes inputs is a list of numpy arrays: [X_s, X_t, X_e]
+
     input_details = interpreter.get_input_details()
     output_details = interpreter.get_output_details()
-    # Set input tensors
+
     for i, arr in enumerate(inputs):
         interpreter.set_tensor(input_details[i]['index'], arr.astype(np.float32))
     interpreter.invoke()
