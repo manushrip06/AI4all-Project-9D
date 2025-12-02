@@ -5,6 +5,7 @@ import holidays
 from datetime import timedelta
 from sklearn.metrics import mean_absolute_error, accuracy_score, classification_report
 from sklearn.preprocessing import LabelEncoder
+import os
 
 # --- 1. SETUP ---
 print("⏳ Loading resources...")
